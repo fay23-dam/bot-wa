@@ -2,7 +2,7 @@ const {
   makeWASocket,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  proto 
+  proto
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const chalk = require("chalk");
@@ -11,9 +11,9 @@ const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
-const e = require("express");
 
 require("./settings");
+
 const logger = pino({
   level: "info",
   transport: {
@@ -26,23 +26,18 @@ const logger = pino({
   }
 });
 
-// --- Auto-ping server agar tidak sleep ---
+// --- Auto-ping server ---
 const app = express();
 app.get("/", (_, res) => res.send("Bot is alive!"));
 app.listen(3000, () => logger.info("[PING] Auto-ping server ready on port 3000"));
 
-// Cache untuk anti-duplikat
-const seen = new Set();
-const sentCache = new Map(); // global
-// ─────────────────────────────────────────────
-// STOCK MONITOR SYSTEM
-// ─────────────────────────────────────────────
+// --- Stock Monitor System ---
 const CATEGORIES = ["seed", "gear", "egg", "honey", "cosmetics", "travelingmerchant"];
 const USER_DATA_PATH = path.join(__dirname, "userdata.json");
+
 let userPreferences = {};
 let lastStockData = null;
 
-// Load user preferences
 function loadUserData() {
   try {
     if (fs.existsSync(USER_DATA_PATH)) {
@@ -54,7 +49,6 @@ function loadUserData() {
   return {};
 }
 
-// Save user preferences
 function saveUserData() {
   try {
     fs.writeFileSync(USER_DATA_PATH, JSON.stringify(userPreferences, null, 2));
@@ -63,13 +57,11 @@ function saveUserData() {
   }
 }
 
-// Reload user data (dipanggil dari Sazara.js)
 global.reloadUserData = () => {
   userPreferences = loadUserData();
   logger.info("[STOCK] User preferences reloaded from disk.");
 };
 
-// Fetch stock data
 async function fetchStockData() {
   try {
     const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
@@ -79,24 +71,13 @@ async function fetchStockData() {
     return null;
   }
 }
+
 const BLOCKQUOTE_ITEMS = [
-  'grandmaster sprinkler',
-  'levelup lollipop',
-  'master sprinkler',
-  'godly sprinkler',
-  'bug egg',
-  'paradise egg',
-  'romanesco',
-  'elder strawberry',
-  'giant pinecone',
-  'burning bud',
-  'sugar apple',
-  'ember lily',
-  'beanstalk',
-  'grape',
-  'mushroom',
-  'pepper'
+  'grandmaster sprinkler', 'levelup lollipop', 'master sprinkler', 'godly sprinkler',
+  'bug egg', 'paradise egg', 'romanesco', 'elder strawberry', 'giant pinecone',
+  'burning bud', 'sugar apple', 'ember lily', 'beanstalk', 'grape', 'mushroom', 'pepper'
 ].map(item => item.toLowerCase());
+
 const DECORATION_EMOJIS = {
   "beach crate": "🏖️","sign crate": "📋","red tractor": "🚜","green tractor": "🚜","compost bin": "♻️",
   "torch": "🔥","light on ground": "💡","mini tv": "📺","small stone table": "🪨","medium stone table": "🪨",
@@ -107,11 +88,17 @@ const DECORATION_EMOJIS = {
   "bird bath": "🐦","large wood flooring": "🧱","stone lantern": "🏮","mutation spray wet": "💧","mutation spray windstruck": "🌪️",
   "staff": "🌙"
 };
-// Notify users
+
+// --- Cache & Hash ---
 function getHash(obj) {
   const crypto = require("crypto");
   return crypto.createHash("md5").update(JSON.stringify(obj)).digest("hex");
 }
+
+const lastHashPerCategory = {};
+const lastUpdatePerCategory = {
+  seed: 0, gear: 0, egg: 0, honey: 0, cosmetics: 0, travelingmerchant: 0
+};
 
 function shouldCheck(category) {
   const now = Date.now();
@@ -121,23 +108,12 @@ function shouldCheck(category) {
     egg: 30 * 60 * 1000,
     honey: 5 * 60 * 1000,
     cosmetics: 2 * 60 * 60 * 1000,
-    travelingmerchant: 4 * 60 * 60 * 1000,
+    travelingmerchant: 4 * 60 * 60 * 1000
   };
-  const next = lastUpdatePerCategory[category] + intervals[category];
-  const ready = now >= next;
-  logger.info(`[${category.toUpperCase()}] Last: ${new Date(lastUpdatePerCategory[category]).toLocaleTimeString()}, Next: ${new Date(next).toLocaleTimeString()}, Ready: ${ready}`);
-  return ready;
+  return now - lastUpdatePerCategory[category] >= intervals[category];
 }
 
-const lastHashPerCategory = {};
-const lastUpdatePerCategory = {
-  seed: 0,
-  gear: 0,
-  egg: 0,
-  honey: 0,
-  cosmetics: 0,
-  travelingmerchant: 0,
-};
+// --- Notify Users ---
 async function notifyUsers(sazara, newData) {
   const now = new Date();
   const timestamp = now.toLocaleTimeString();
@@ -150,28 +126,27 @@ async function notifyUsers(sazara, newData) {
 
     for (const category of CATEGORIES) {
       const categoryData = newData.data[category];
-      if (!categoryData?.items) continue;
-
-      // Skip jika traveling merchant sudah lewat
-      if (category === 'travelingmerchant' && categoryData.status === 'leaved') {
-        logger.info(`[${category.toUpperCase()}] Skipped (leaved)`);
+      if (!categoryData?.items) {
+        lastHashPerCategory[category] = null;
         lastUpdatePerCategory[category] = Date.now();
         continue;
       }
 
-      // Cek apakah sudah waktunya cek kategori ini
-      if (!shouldCheck(category)) continue;
-
-      // Hitung hash untuk deteksi perubahan
-      const hash = getHash(categoryData.items);
-
-      if (lastHashPerCategory[category] === hash) {
-        logger.info(`[${category.toUpperCase()}] No change, skipping notif`);
-        lastUpdatePerCategory[category] = Date.now(); // tetap reset timer
+      if (category === 'travelingmerchant' && categoryData.status === 'leaved') {
+        lastHashPerCategory[category] = null;
+        lastUpdatePerCategory[category] = Date.now();
         continue;
       }
 
-      logger.info(`[${category.toUpperCase()}] Data changed, preparing notif`);
+      if (!shouldCheck(category)) continue;
+
+      const items = categoryData.items.map(i => ({ ...i, name: i.name.toLowerCase() }));
+      const hash = getHash(items);
+
+      if (lastHashPerCategory[category] === hash) {
+        lastUpdatePerCategory[category] = Date.now();
+        continue;
+      }
 
       lastHashPerCategory[category] = hash;
       lastUpdatePerCategory[category] = Date.now();
@@ -179,7 +154,7 @@ async function notifyUsers(sazara, newData) {
       const hasCategoryAll = prefs.includes(`${category}:all`);
       const categoryItems = [];
 
-      for (const item of categoryData.items) {
+      for (const item of items) {
         const itemKey = item.name.toLowerCase();
         if (hasCategoryAll || prefs.includes(itemKey)) {
           categoryItems.push(item);
@@ -200,13 +175,14 @@ async function notifyUsers(sazara, newData) {
           default: categoryName = category.toUpperCase();
         }
 
-        let itemsText = categoryItems.map(item => {
+        const itemsText = categoryItems.map(item => {
           const itemName = item.name.toLowerCase();
-          let emoji = DECORATION_EMOJIS[itemName] || item.emoji || "📦";
-          if (BLOCKQUOTE_ITEMS.includes(itemName)) {
-            return `> ${emoji} \`\`\`*${item.name} x${item.quantity}*\`\`\``;
-          }
-          return `- ${emoji} *${item.name} x${item.quantity}*`;
+          const displayName = item.name.charAt(0).toUpperCase() + item.name.slice(1);
+          const emoji = DECORATION_EMOJIS[itemName] || item.emoji || "📦";
+
+          return BLOCKQUOTE_ITEMS.includes(itemName)
+            ? `> ${emoji} \`\`\`*${displayName} x${item.quantity}*\`\`\``
+            : `- ${emoji} *${displayName} x${item.quantity}*`;
         }).join("\n");
 
         categoryMessages[category] = `*${categoryName}*\n${itemsText}`;
@@ -226,7 +202,7 @@ async function notifyUsers(sazara, newData) {
           await sazara.query({
             tag: 'message',
             attrs: { to: jid, type: 'text' },
-            content: [{ tag: 'plaintext', attrs: {}, content: plaintext }],
+            content: [{ tag: 'plaintext', attrs: {}, content: plaintext }]
           });
         } else {
           await sazara.sendMessage(jid, { text: message });
@@ -238,10 +214,10 @@ async function notifyUsers(sazara, newData) {
   }
 }
 
-// Stock monitoring scheduler
+// --- Stock Monitor Scheduler ---
 async function startStockMonitor(sazara) {
   userPreferences = loadUserData();
-sentCache.clear();
+
   const scheduleNextCheck = async () => {
     try {
       const now = new Date();
@@ -255,7 +231,7 @@ sentCache.clear();
       }
 
       const delayMs = nextCheck - now;
-      logger.info(`[STOCK] Next check at ${nextCheck.toLocaleTimeString()} (in ${Math.round(delayMs/1000)}s)`);
+      logger.info(`[STOCK] Next check at ${nextCheck.toLocaleTimeString()} (in ${Math.round(delayMs / 1000)}s)`);
 
       setTimeout(async () => {
         try {
@@ -281,6 +257,7 @@ sentCache.clear();
   scheduleNextCheck();
 }
 
+// --- WhatsApp Connection ---
 async function connectToWhatsApp() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("./sesi");
@@ -317,6 +294,7 @@ async function connectToWhatsApp() {
       }
     });
 
+    const seen = new Set();
     sazara.ev.on("messages.upsert", async (m) => {
       for (const msg of m.messages) {
         if (!msg.message || msg.key.fromMe) continue;
@@ -328,16 +306,12 @@ async function connectToWhatsApp() {
         const sender = msg.key.remoteJid;
         const isBroadcast = sender.endsWith("@broadcast");
         const isStatus = sender === "status@broadcast";
-        const body =
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
-          "";
+        const body = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
 
         if (body.includes("Copyright © growagarden.info")) continue;
         if (isBroadcast || isStatus) continue;
 
         const push = msg.pushName || "Unknown";
-        const dir = sender.endsWith("@g.us") ? "GROUP" : "PRIVATE";
         const who = msg.key.participant
           ? `${push} (via group ${sender.split("@")[0]})`
           : push;
