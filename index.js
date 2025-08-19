@@ -108,6 +108,36 @@ const DECORATION_EMOJIS = {
   "staff": "🌙"
 };
 // Notify users
+function getHash(obj) {
+  const crypto = require("crypto");
+  return crypto.createHash("md5").update(JSON.stringify(obj)).digest("hex");
+}
+
+function shouldCheck(category) {
+  const now = Date.now();
+  const intervals = {
+    seed: 5 * 60 * 1000,
+    gear: 5 * 60 * 1000,
+    egg: 30 * 60 * 1000,
+    honey: 5 * 60 * 1000,
+    cosmetics: 2 * 60 * 60 * 1000,
+    travelingmerchant: 4 * 60 * 60 * 1000,
+  };
+  const next = lastUpdatePerCategory[category] + intervals[category];
+  const ready = now >= next;
+  logger.info(`[${category.toUpperCase()}] Last: ${new Date(lastUpdatePerCategory[category]).toLocaleTimeString()}, Next: ${new Date(next).toLocaleTimeString()}, Ready: ${ready}`);
+  return ready;
+}
+
+const lastHashPerCategory = {};
+const lastUpdatePerCategory = {
+  seed: 0,
+  gear: 0,
+  egg: 0,
+  honey: 0,
+  cosmetics: 0,
+  travelingmerchant: 0,
+};
 async function notifyUsers(sazara, newData) {
   const now = new Date();
   const timestamp = now.toLocaleTimeString();
@@ -120,18 +150,36 @@ async function notifyUsers(sazara, newData) {
 
     for (const category of CATEGORIES) {
       const categoryData = newData.data[category];
-      if (!categoryData || !categoryData.items) continue;
+      if (!categoryData?.items) continue;
 
+      // Skip jika traveling merchant sudah lewat
       if (category === 'travelingmerchant' && categoryData.status === 'leaved') {
+        logger.info(`[${category.toUpperCase()}] Skipped (leaved)`);
+        lastUpdatePerCategory[category] = Date.now();
         continue;
       }
 
-      const items = categoryData.items;
-      const categoryAllKey = `${category}:all`;
-      const hasCategoryAll = prefs.includes(categoryAllKey);
+      // Cek apakah sudah waktunya cek kategori ini
+      if (!shouldCheck(category)) continue;
+
+      // Hitung hash untuk deteksi perubahan
+      const hash = getHash(categoryData.items);
+
+      if (lastHashPerCategory[category] === hash) {
+        logger.info(`[${category.toUpperCase()}] No change, skipping notif`);
+        lastUpdatePerCategory[category] = Date.now(); // tetap reset timer
+        continue;
+      }
+
+      logger.info(`[${category.toUpperCase()}] Data changed, preparing notif`);
+
+      lastHashPerCategory[category] = hash;
+      lastUpdatePerCategory[category] = Date.now();
+
+      const hasCategoryAll = prefs.includes(`${category}:all`);
       const categoryItems = [];
 
-      for (const item of items) {
+      for (const item of categoryData.items) {
         const itemKey = item.name.toLowerCase();
         if (hasCategoryAll || prefs.includes(itemKey)) {
           categoryItems.push(item);
@@ -144,7 +192,7 @@ async function notifyUsers(sazara, newData) {
         let categoryName;
         switch(category) {
           case 'seed': categoryName = '🌱 Seeds Stock'; break;
-          case 'gear': categoryName = '⚙ Gear Stock'; break;
+          case 'gear': categoryName = '⚙️ Gear Stock'; break;
           case 'egg': categoryName = '🥚 Egg Stock'; break;
           case 'honey': categoryName = '🍯 Honey Stock'; break;
           case 'cosmetics': categoryName = '🎨 Cosmetic Items'; break;
@@ -155,11 +203,9 @@ async function notifyUsers(sazara, newData) {
         let itemsText = categoryItems.map(item => {
           const itemName = item.name.toLowerCase();
           let emoji = DECORATION_EMOJIS[itemName] || item.emoji || "📦";
-          // Format blockquote untuk item tertentu
           if (BLOCKQUOTE_ITEMS.includes(itemName)) {
             return `> ${emoji} \`\`\`*${item.name} x${item.quantity}*\`\`\``;
           }
-          
           return `- ${emoji} *${item.name} x${item.quantity}*`;
         }).join("\n");
 
@@ -168,38 +214,21 @@ async function notifyUsers(sazara, newData) {
     }
 
     if (totalItems > 0) {
-      const message = `🔔 *STOCK UPDATE!*\n\n` + 
-                      Object.values(categoryMessages).join("\n\n") +
-                      `\n\n_Pesan otomatis • ${timestamp}_`;
+      const message = `🔔 *STOCK UPDATE!*\n\n` +
+        Object.values(categoryMessages).join("\n\n") +
+        `\n\n_Pesan otomatis • ${timestamp}_`;
 
       logger.info(`[NOTIF] ${totalItems} item(s) => ${jid}`);
-
       try {
-        // await sazara.sendMessage(jid, { text: message });
-        // Jika newsletter, kirim juga ke nomor admin sebagai fallback
         if (jid.endsWith('@newsletter')) {
-          
-        // Handle connection and send message
-          const msg = { conversation: message };// Replace with actual JID
-
-          // Encode message
+          const msg = { conversation: message };
           const plaintext = proto.Message.encode(msg).finish();
-          const plaintextNode = {
-            tag: 'plaintext',
-            attrs: {},
-            content: plaintext,
-          };
-          const node = {
+          await sazara.query({
             tag: 'message',
             attrs: { to: jid, type: 'text' },
-            content: [plaintextNode],
-          };
-
-          // Send message
-          await sazara.query(node);
-          console.log('Message sent!');
-          
-        }else {
+            content: [{ tag: 'plaintext', attrs: {}, content: plaintext }],
+          });
+        } else {
           await sazara.sendMessage(jid, { text: message });
         }
       } catch (error) {
