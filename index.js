@@ -201,7 +201,7 @@ async function startStockMonitor(sazara) {
       }
 
       const delayMs = nextCheck - now;
-      logger.info(`[STOCK] Next check at ${nextCheck.toLocaleTimeString()} (in ${Math.round(delayMs / 1000)}s)`);
+      logger.info(`[STOCK] Next check at ${nextCheck.toLocaleTimeString("id-ID", { hour12: false })} (in ${Math.round(delayMs / 1000)}s)`);
 
       setTimeout(async () => {
         try {
