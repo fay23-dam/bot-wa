@@ -116,6 +116,7 @@ function shouldCheck(category) {
 // --- Notify Users ---
 async function notifyUsers(sazara, newData) {
   const now = new Date();
+  const timestamp = now.toLocaleTimeString("id-ID", { hour12: false });
   const timestamp = now.toLocaleTimeString();
 
   for (const [jid, prefs] of Object.entries(userPreferences)) {
