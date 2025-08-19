@@ -126,67 +126,38 @@ async function notifyUsers(sazara, newData) {
 
     for (const category of CATEGORIES) {
       const categoryData = newData.data[category];
-      if (!categoryData?.items) {
-        lastHashPerCategory[category] = null;
-        lastUpdatePerCategory[category] = Date.now();
-        continue;
-      }
-
-      if (category === 'travelingmerchant' && categoryData.status === 'leaved') {
-        lastHashPerCategory[category] = null;
-        lastUpdatePerCategory[category] = Date.now();
-        continue;
-      }
-
-      if (!shouldCheck(category)) continue;
+      if (!categoryData?.items) continue;
+      if (category === 'travelingmerchant' && categoryData.status === 'leaved') continue;
 
       const items = categoryData.items.map(i => ({ ...i, name: i.name.toLowerCase() }));
-      const hash = getHash(items);
-
-      if (lastHashPerCategory[category] === hash) {
-        lastUpdatePerCategory[category] = Date.now();
-        continue;
-      }
-
-      lastHashPerCategory[category] = hash;
-      lastUpdatePerCategory[category] = Date.now();
-
       const hasCategoryAll = prefs.includes(`${category}:all`);
-      const categoryItems = [];
+      const categoryItems = items.filter(item =>
+        hasCategoryAll || prefs.includes(item.name)
+      );
 
-      for (const item of items) {
-        const itemKey = item.name.toLowerCase();
-        if (hasCategoryAll || prefs.includes(itemKey)) {
-          categoryItems.push(item);
-        }
-      }
+      if (categoryItems.length === 0) continue;
 
-      if (categoryItems.length > 0) {
-        totalItems += categoryItems.length;
+      totalItems += categoryItems.length;
 
-        let categoryName;
-        switch(category) {
-          case 'seed': categoryName = '🌱 Seeds Stock'; break;
-          case 'gear': categoryName = '⚙️ Gear Stock'; break;
-          case 'egg': categoryName = '🥚 Egg Stock'; break;
-          case 'honey': categoryName = '🍯 Honey Stock'; break;
-          case 'cosmetics': categoryName = '🎨 Cosmetic Items'; break;
-          case 'travelingmerchant': categoryName = '🧳 Traveling Merchant'; break;
-          default: categoryName = category.toUpperCase();
-        }
+      const categoryNameMap = {
+        seed: '🌱 Seeds Stock',
+        gear: '⚙️ Gear Stock',
+        egg: '🥚 Egg Stock',
+        honey: '🍯 Honey Stock',
+        cosmetics: '🎨 Cosmetic Items',
+        travelingmerchant: '🧳 Traveling Merchant'
+      };
 
-        const itemsText = categoryItems.map(item => {
-          const itemName = item.name.toLowerCase();
-          const displayName = item.name.charAt(0).toUpperCase() + item.name.slice(1);
-          const emoji = DECORATION_EMOJIS[itemName] || item.emoji || "📦";
+      const itemsText = categoryItems.map(item => {
+        const itemName = item.name;
+        const displayName = itemName.charAt(0).toUpperCase() + itemName.slice(1);
+        const emoji = DECORATION_EMOJIS[itemName] || item.emoji || "📦";
+        return BLOCKQUOTE_ITEMS.includes(itemName)
+          ? `> ${emoji} \`\`\`*${displayName} x${item.quantity}*\`\`\``
+          : `- ${emoji} *${displayName} x${item.quantity}*`;
+      }).join("\n");
 
-          return BLOCKQUOTE_ITEMS.includes(itemName)
-            ? `> ${emoji} \`\`\`*${displayName} x${item.quantity}*\`\`\``
-            : `- ${emoji} *${displayName} x${item.quantity}*`;
-        }).join("\n");
-
-        categoryMessages[category] = `*${categoryName}*\n${itemsText}`;
-      }
+      categoryMessages[category] = `*${categoryNameMap[category]}*\n${itemsText}`;
     }
 
     if (totalItems > 0) {
@@ -194,7 +165,6 @@ async function notifyUsers(sazara, newData) {
         Object.values(categoryMessages).join("\n\n") +
         `\n\n_Pesan otomatis • ${timestamp}_`;
 
-      logger.info(`[NOTIF] ${totalItems} item(s) => ${jid}`);
       try {
         if (jid.endsWith('@newsletter')) {
           const msg = { conversation: message };
