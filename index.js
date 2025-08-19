@@ -33,7 +33,7 @@ app.listen(3000, () => logger.info("[PING] Auto-ping server ready on port 3000")
 
 // Cache untuk anti-duplikat
 const seen = new Set();
-
+const sentCache = new Map(); // global
 // ─────────────────────────────────────────────
 // STOCK MONITOR SYSTEM
 // ─────────────────────────────────────────────
@@ -212,7 +212,7 @@ async function notifyUsers(sazara, newData) {
 // Stock monitoring scheduler
 async function startStockMonitor(sazara) {
   userPreferences = loadUserData();
-
+sentCache.clear();
   const scheduleNextCheck = async () => {
     try {
       const now = new Date();
