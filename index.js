@@ -86,7 +86,7 @@ async function fetchStockDataWithRetry(lastUpdatedAt = null) {
     }
 
     attempt++;
-    await new Promise(res => setTimeout(res, 2000));
+    await new Promise(res => setTimeout(res, 1500));
   }
 
   logger.warn("[STOCK] Max retries reached, using latest data.");
