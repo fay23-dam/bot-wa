@@ -6,6 +6,7 @@ const {
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const chalk = require("chalk");
+const qrcode = require("qrcode-terminal");
 const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
@@ -68,7 +69,7 @@ async function fetchStockDataWithRetry(lastUpdatedAt = null) {
 
   while (attempt < maxRetries) {
     try {
-      const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
+      const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden  ");
       const data = res.data;
 
       if (data?.status === "success") {
@@ -242,14 +243,19 @@ async function connectToWhatsApp() {
 
     sazara.ev.on("creds.update", saveCreds);
 
-    sazara.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
+    sazara.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        logger.info("Scan QR:");
+        qrcode.generate(qr, { small: true });
+      }
+
       if (connection === "close") {
         const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== 401;
         if (shouldReconnect) {
           logger.warn("Reconnecting…");
           await connectToWhatsApp();
         } else {
-          logger.error("Unauthorized, please restart bot.");
+          logger.error("Unauthorized, please scan QR again.");
         }
       } else if (connection === "open") {
         logger.info("✅ Bot ready");
