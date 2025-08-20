@@ -4,11 +4,11 @@ const {
   fetchLatestBaileysVersion,
   proto
 } = require("@whiskeysockets/baileys");
-const WebSocket = require('ws');
 const pino = require("pino");
 const chalk = require("chalk");
 const qrcode = require("qrcode-terminal");
 const express = require("express");
+const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 
@@ -37,7 +37,6 @@ const USER_DATA_PATH = path.join(__dirname, "userdata.json");
 
 let userPreferences = {};
 let lastStockData = null;
-let ws = null;
 
 function loadUserData() {
   try {
@@ -63,52 +62,35 @@ global.reloadUserData = () => {
   logger.info("[STOCK] User preferences reloaded from disk.");
 };
 
-// --- WebSocket Connection ---
-function connectWebSocket(sazara) {
-  if (ws) {
+// --- Retry Fetch ---
+async function fetchStockDataWithRetry(lastUpdatedAt = null) {
+  const maxRetries = 30;
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
     try {
-      ws.close();
+      const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
+      const data = res.data;
+
+      if (data?.status === "success") {
+        const newUpdatedAt = new Date(data.updated_at).getTime();
+
+        if (!lastUpdatedAt || newUpdatedAt > lastUpdatedAt) {
+          return data;
+        }
+
+        logger.info(`[STOCK] Data masih lama (${data.updated_at}), retrying... (${attempt + 1}/${maxRetries})`);
+      }
     } catch (e) {
-      // Ignore errors when closing
+      logger.error("[STOCK] Error fetching:", e.message);
     }
+
+    attempt++;
+    await new Promise(res => setTimeout(res, 2000));
   }
 
-  ws = new WebSocket('wss://gagstock.gleeze.com');
-
-  ws.on('open', function open() {
-    logger.info('[WEBSOCKET] Terhubung ke server Grow A Garden');
-  });
-
-  ws.on('message', async function message(data) {
-    try {
-      const newData = JSON.parse(data);
-      
-      if (newData?.status === "success") {
-        const newUpdatedAt = new Date(newData.updated_at).getTime();
-        const lastUpdatedAt = lastStockData ? new Date(lastStockData.updated_at).getTime() : 0;
-        
-        // Only notify if data is newer
-        if (newUpdatedAt > lastUpdatedAt) {
-          logger.info('[WEBSOCKET] Data stok baru diterima');
-          await notifyUsers(sazara, newData);
-          lastStockData = newData;
-        } else {
-          logger.info('[WEBSOCKET] Data diterima tetapi tidak lebih baru, mengabaikan');
-        }
-      }
-    } catch (error) {
-      logger.error('[WEBSOCKET] Error parsing data:', error.message);
-    }
-  });
-
-  ws.on('close', function close() {
-    logger.info('[WEBSOCKET] Koneksi ditutup, mencoba menyambung ulang dalam 5 detik...');
-    setTimeout(() => connectWebSocket(sazara), 5000);
-  });
-
-  ws.on('error', function error(err) {
-    logger.error('[WEBSOCKET] Error:', err.message);
-  });
+  logger.warn("[STOCK] Max retries reached, using latest data.");
+  return null;
 }
 
 // --- Notification Logic ---
@@ -130,10 +112,11 @@ const DECORATION_EMOJIS = {
 };
 
 async function notifyUsers(sazara, newData) {
+  const now = new Date();
   const timestamp = new Date().toLocaleTimeString("id-ID", {
-    timeZone: "Asia/Jakarta",
-    hour12: false
-  });
+  timeZone: "Asia/Jakarta",
+  hour12: false
+});
 
   for (const [jid, prefs] of Object.entries(userPreferences)) {
     if (!prefs?.length) continue;
@@ -200,10 +183,49 @@ async function notifyUsers(sazara, newData) {
   }
 }
 
-// --- Monitor Scheduler (WebSocket Version) ---
+// --- Monitor Scheduler ---
 async function startStockMonitor(sazara) {
   userPreferences = loadUserData();
-  connectWebSocket(sazara);
+
+  const scheduleNextCheck = async () => {
+    try {
+      const now = new Date();
+      const nextCheck = new Date(now);
+      nextCheck.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
+      nextCheck.setSeconds(12);
+      nextCheck.setMilliseconds(0);
+
+      if (nextCheck < now) {
+        nextCheck.setMinutes(nextCheck.getMinutes() + 5);
+      }
+
+      const delayMs = nextCheck - now;
+      logger.info(`[STOCK] Next check at ${nextCheck.toLocaleTimeString("id-ID", { hour12: false })} (in ${Math.round(delayMs / 1000)}s)`);
+
+      setTimeout(async () => {
+        try {
+          logger.info("[STOCK] Checking stock update...");
+          const lastUpdated = lastStockData ? new Date(lastStockData.updated_at).getTime() : null;
+          const newData = await fetchStockDataWithRetry(lastUpdated);
+
+          if (newData) {
+            logger.info("[STOCK] Sending stock notifications...");
+            await notifyUsers(sazara, newData);
+            lastStockData = newData;
+          }
+        } catch (e) {
+          logger.error("[STOCK] Check error:", e.message);
+        }
+        scheduleNextCheck();
+      }, delayMs);
+    } catch (e) {
+      logger.error("[STOCK] Scheduler error:", e.message);
+      setTimeout(scheduleNextCheck, 5 * 60 * 1000);
+    }
+  };
+
+  lastStockData = await fetchStockDataWithRetry();
+  scheduleNextCheck();
 }
 
 // --- WhatsApp Connection ---
