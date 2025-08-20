@@ -20,6 +20,7 @@ const RARE_ITEMS = [
   "bug egg",
   "paradise egg",
   "romanesco",
+  "cacao",
   "elder strawberry",
   "giant pinecone",
   "burning bud",
