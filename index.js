@@ -193,7 +193,7 @@ async function startStockMonitor(sazara) {
       const now = new Date();
       const nextCheck = new Date(now);
       nextCheck.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
-      nextCheck.setSeconds(7);
+      nextCheck.setSeconds(9);
       nextCheck.setMilliseconds(0);
 
       if (nextCheck < now) {
