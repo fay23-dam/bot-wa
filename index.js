@@ -239,7 +239,7 @@ async function connectToWhatsApp() {
       version,
       syncFullHistory: false,
       pairingCode: true,
-      phoneNumber: "6281247152893"
+      phoneNumber: "6281247152893@s.whatsapp.net"
     });
 
     sazara.ev.on("creds.update", saveCreds);
