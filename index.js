@@ -69,7 +69,7 @@ async function fetchStockDataWithRetry(lastUpdatedAt = null) {
 
   while (attempt < maxRetries) {
     try {
-      const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden  ");
+      const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
       const data = res.data;
 
       if (data?.status === "success") {
