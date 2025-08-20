@@ -62,16 +62,38 @@ global.reloadUserData = () => {
   logger.info("[STOCK] User preferences reloaded from disk.");
 };
 
-async function fetchStockData() {
-  try {
-    const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
-    return res.data?.status === "success" ? res.data : null;
-  } catch (e) {
-    logger.error("Error fetching stock data:", e.message);
-    return null;
+// --- Retry Fetch ---
+async function fetchStockDataWithRetry(lastUpdatedAt = null) {
+  const maxRetries = 30;
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
+    try {
+      const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
+      const data = res.data;
+
+      if (data?.status === "success") {
+        const newUpdatedAt = new Date(data.updated_at).getTime();
+
+        if (!lastUpdatedAt || newUpdatedAt > lastUpdatedAt) {
+          return data;
+        }
+
+        logger.info(`[STOCK] Data masih lama (${data.updated_at}), retrying... (${attempt + 1}/${maxRetries})`);
+      }
+    } catch (e) {
+      logger.error("[STOCK] Error fetching:", e.message);
+    }
+
+    attempt++;
+    await new Promise(res => setTimeout(res, 5000));
   }
+
+  logger.warn("[STOCK] Max retries reached, using latest data.");
+  return null;
 }
 
+// --- Notification Logic ---
 const BLOCKQUOTE_ITEMS = [
   'grandmaster sprinkler', 'levelup lollipop', 'master sprinkler', 'godly sprinkler',
   'bug egg', 'paradise egg', 'romanesco', 'elder strawberry', 'giant pinecone',
@@ -89,31 +111,6 @@ const DECORATION_EMOJIS = {
   "staff": "🌙"
 };
 
-// --- Cache & Hash ---
-function getHash(obj) {
-  const crypto = require("crypto");
-  return crypto.createHash("md5").update(JSON.stringify(obj)).digest("hex");
-}
-
-const lastHashPerCategory = {};
-const lastUpdatePerCategory = {
-  seed: 0, gear: 0, egg: 0, honey: 0, cosmetics: 0, travelingmerchant: 0
-};
-
-function shouldCheck(category) {
-  const now = Date.now();
-  const intervals = {
-    seed: 5 * 60 * 1000,
-    gear: 5 * 60 * 1000,
-    egg: 30 * 60 * 1000,
-    honey: 5 * 60 * 1000,
-    cosmetics: 2 * 60 * 60 * 1000,
-    travelingmerchant: 4 * 60 * 60 * 1000
-  };
-  return now - lastUpdatePerCategory[category] >= intervals[category];
-}
-
-// --- Notify Users ---
 async function notifyUsers(sazara, newData) {
   const now = new Date();
   const timestamp = now.toLocaleTimeString("id-ID", { hour12: false });
@@ -184,7 +181,7 @@ async function notifyUsers(sazara, newData) {
   }
 }
 
-// --- Stock Monitor Scheduler ---
+// --- Monitor Scheduler ---
 async function startStockMonitor(sazara) {
   userPreferences = loadUserData();
 
@@ -206,7 +203,9 @@ async function startStockMonitor(sazara) {
       setTimeout(async () => {
         try {
           logger.info("[STOCK] Checking stock update...");
-          const newData = await fetchStockData();
+          const lastUpdated = lastStockData ? new Date(lastStockData.updated_at).getTime() : null;
+          const newData = await fetchStockDataWithRetry(lastUpdated);
+
           if (newData) {
             logger.info("[STOCK] Sending stock notifications...");
             await notifyUsers(sazara, newData);
@@ -223,7 +222,7 @@ async function startStockMonitor(sazara) {
     }
   };
 
-  lastStockData = await fetchStockData();
+  lastStockData = await fetchStockDataWithRetry();
   scheduleNextCheck();
 }
 
