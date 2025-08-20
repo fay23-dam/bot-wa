@@ -32,7 +32,7 @@ app.get("/", (_, res) => res.send("Bot is alive!"));
 app.listen(3000, () => logger.info("[PING] Auto-ping server ready on port 3000"));
 
 // --- Stock Monitor System ---
-const CATEGORIES = ["seed", "gear", "egg", "honey", "cosmetics", "travelingmerchant"];
+const CATEGORIES = ["seed", "gear", "egg", "cosmetics", "travelingmerchant"]; // Hapus 'honey' dari kategori
 const USER_DATA_PATH = path.join(__dirname, "userdata.json");
 
 let userPreferences = {};
@@ -64,7 +64,7 @@ global.reloadUserData = () => {
 
 // --- Retry Fetch ---
 async function fetchStockDataWithRetry(lastUpdatedAt = null) {
-  const maxRetries = 30;
+  const maxRetries = 10; // Kurangi retry dari 30 menjadi 3
   let attempt = 0;
 
   while (attempt < maxRetries) {
@@ -79,14 +79,15 @@ async function fetchStockDataWithRetry(lastUpdatedAt = null) {
           return data;
         }
 
-        logger.info(`[STOCK] Data masih lama (${data.updated_at}), retrying... (${attempt + 1}/${maxRetries})`);
+        logger.info(`[STOCK] Data masih lama (${data.updated_at}), skipping...`);
+        return null; // Langsung return null jika data belum update
       }
     } catch (e) {
       logger.error("[STOCK] Error fetching:", e.message);
     }
 
     attempt++;
-    await new Promise(res => setTimeout(res, 5000));
+    await new Promise(res => setTimeout(res, 2000)); // Tunggu 1 detik antar retry
   }
 
   logger.warn("[STOCK] Max retries reached, using latest data.");
@@ -95,7 +96,7 @@ async function fetchStockDataWithRetry(lastUpdatedAt = null) {
 
 // --- Notification Logic ---
 const BLOCKQUOTE_ITEMS = [
-  'grandmaster sprinkler', 'levelup lollipop', 'master sprinkler', 'godly sprinkler',
+  'grandmaster sprinkler', 'levelup lollipop','cacao', 'master sprinkler', 'godly sprinkler',
   'bug egg', 'paradise egg', 'romanesco', 'elder strawberry', 'giant pinecone',
   'burning bud', 'sugar apple', 'ember lily', 'beanstalk', 'grape', 'mushroom', 'pepper'
 ].map(item => item.toLowerCase());
@@ -121,7 +122,7 @@ async function notifyUsers(sazara, newData) {
     const categoryMessages = {};
     let totalItems = 0;
 
-    for (const category of CATEGORIES) {
+    for (const category of CATEGORIES) { // CATEGORIES sudah tidak termasuk honey
       const categoryData = newData.data[category];
       if (!categoryData?.items) continue;
       if (category === 'travelingmerchant' && categoryData.status === 'leaved') continue;
@@ -140,7 +141,6 @@ async function notifyUsers(sazara, newData) {
         seed: '🌱 Seeds Stock',
         gear: '⚙️ Gear Stock',
         egg: '🥚 Egg Stock',
-        honey: '🍯 Honey Stock',
         cosmetics: '🎨 Cosmetic Items',
         travelingmerchant: '🧳 Traveling Merchant'
       };
@@ -181,49 +181,31 @@ async function notifyUsers(sazara, newData) {
   }
 }
 
-// --- Monitor Scheduler ---
+// --- Monitor Scheduler (2 detik) ---
 async function startStockMonitor(sazara) {
   userPreferences = loadUserData();
 
-  const scheduleNextCheck = async () => {
+  const checkInterval = async () => {
     try {
-      const now = new Date();
-      const nextCheck = new Date(now);
-      nextCheck.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
-      nextCheck.setSeconds(12);
-      nextCheck.setMilliseconds(0);
+      logger.info("[STOCK] Checking stock update...");
+      const lastUpdated = lastStockData ? new Date(lastStockData.updated_at).getTime() : null;
+      const newData = await fetchStockDataWithRetry(lastUpdated);
 
-      if (nextCheck < now) {
-        nextCheck.setMinutes(nextCheck.getMinutes() + 5);
+      if (newData) {
+        logger.info("[STOCK] Sending stock notifications...");
+        await notifyUsers(sazara, newData);
+        lastStockData = newData;
       }
-
-      const delayMs = nextCheck - now;
-      logger.info(`[STOCK] Next check at ${nextCheck.toLocaleTimeString("id-ID", { hour12: false })} (in ${Math.round(delayMs / 1000)}s)`);
-
-      setTimeout(async () => {
-        try {
-          logger.info("[STOCK] Checking stock update...");
-          const lastUpdated = lastStockData ? new Date(lastStockData.updated_at).getTime() : null;
-          const newData = await fetchStockDataWithRetry(lastUpdated);
-
-          if (newData) {
-            logger.info("[STOCK] Sending stock notifications...");
-            await notifyUsers(sazara, newData);
-            lastStockData = newData;
-          }
-        } catch (e) {
-          logger.error("[STOCK] Check error:", e.message);
-        }
-        scheduleNextCheck();
-      }, delayMs);
     } catch (e) {
-      logger.error("[STOCK] Scheduler error:", e.message);
-      setTimeout(scheduleNextCheck, 5 * 60 * 1000);
+      logger.error("[STOCK] Check error:", e.message);
     }
+    
+    // Jadwalkan pengecekan berikutnya setelah 2 detik
+    setTimeout(checkInterval, 2000);
   };
 
   lastStockData = await fetchStockDataWithRetry();
-  scheduleNextCheck();
+  checkInterval(); // Mulai pengecekan pertama
 }
 
 // --- WhatsApp Connection ---
