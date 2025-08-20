@@ -6,7 +6,6 @@ const {
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const chalk = require("chalk");
-const qrcode = require("qrcode-terminal");
 const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
@@ -240,24 +239,19 @@ async function connectToWhatsApp() {
       version,
       syncFullHistory: false,
       pairingCode: true,
-      phoneNumber: "6281247152893", // Nomor tujuan kode pairing
+      phoneNumber: "6281247152893"
     });
 
     sazara.ev.on("creds.update", saveCreds);
 
-    sazara.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
-      if (qr) {
-        logger.info("Scan QR:");
-        qrcode.generate(qr, { small: true });
-      }
-
+    sazara.ev.on("connection.update", async ({ connection, lastDisconnect }) => {
       if (connection === "close") {
         const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== 401;
         if (shouldReconnect) {
           logger.warn("Reconnecting…");
           await connectToWhatsApp();
         } else {
-          logger.error("Unauthorized, please scan QR again.");
+          logger.error("Unauthorized, please restart bot.");
         }
       } else if (connection === "open") {
         logger.info("✅ Bot ready");
