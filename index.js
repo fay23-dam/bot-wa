@@ -239,6 +239,8 @@ async function connectToWhatsApp() {
       browser: ["Ubuntu", "Chrome", "20.0.04"],
       version,
       syncFullHistory: false,
+      pairingCode: true,
+      phoneNumber: "6281247152893", // Nomor tujuan kode pairing
     });
 
     sazara.ev.on("creds.update", saveCreds);
