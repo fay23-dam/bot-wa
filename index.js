@@ -3,9 +3,11 @@ const {
   makeWASocket,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  proto,
+  proto
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
+const chalk = require("chalk");
+const qrcode = require("qrcode-terminal");
 const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
@@ -13,158 +15,298 @@ const path = require("path");
 
 require("./settings");
 
-/* ---------- Logger ---------- */
+/* ------------------------------------------------------------------ */
+/* Logger                                                             */
+/* ------------------------------------------------------------------ */
 const logger = pino({
   level: "info",
-  transport: { target: "pino-pretty", options: { colorize: true, translateTime: "HH:MM:ss", ignore: "pid,hostname" } },
+  transport: {
+    target: "pino-pretty",
+    options: {
+      colorize: true,
+      translateTime: "HH:MM:ss",
+      ignore: "pid,hostname"
+    }
+  }
 });
 
-/* ---------- Auto-ping ---------- */
+/* ------------------------------------------------------------------ */
+/* Auto-ping server                                                     */
+/* ------------------------------------------------------------------ */
 const app = express();
 app.get("/", (_, res) => res.send("Bot is alive!"));
 app.listen(3000, () => logger.info("[PING] Auto-ping server ready on port 3000"));
 
-/* ---------- Config ---------- */
+/* ------------------------------------------------------------------ */
+/* Global variables                                                     */
+/* ------------------------------------------------------------------ */
 const CATEGORIES = ["seed", "gear", "egg", "cosmetics", "travelingmerchant"];
 const USER_DATA_PATH = path.join(__dirname, "userdata.json");
-let userPreferences = {};
-let lastSentAt = 0;           // timestamp terakhir yang sudah kita broadcast
 
-/* ---------- User data helper ---------- */
+let userPreferences = {};
+let lastStockData = null;
+let lastSentAt = 0;   // timestamp terakhir yang sudah dikirim
+
+/* ------------------------------------------------------------------ */
+/* User data helper                                                   */
+/* ------------------------------------------------------------------ */
 function loadUserData() {
-  try { if (fs.existsSync(USER_DATA_PATH)) return JSON.parse(fs.readFileSync(USER_DATA_PATH, "utf8")); } catch {}
+  try {
+    if (fs.existsSync(USER_DATA_PATH)) {
+      return JSON.parse(fs.readFileSync(USER_DATA_PATH, "utf8"));
+    }
+  } catch (e) {
+    logger.error("Error loading user data:", e.message);
+  }
   return {};
 }
 function saveUserData() {
-  try { fs.writeFileSync(USER_DATA_PATH, JSON.stringify(userPreferences, null, 2)); } catch {}
-}
-global.reloadUserData = () => { userPreferences = loadUserData(); logger.info("[STOCK] User preferences reloaded."); };
-
-/* ---------- Fetch stock (tanpa retry) ---------- */
-async function fetchStockOnce() {
   try {
-    const { data } = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
-    if (data?.status === "success") return data;
+    fs.writeFileSync(USER_DATA_PATH, JSON.stringify(userPreferences, null, 2));
+  } catch (e) {
+    logger.error("Error saving user data:", e.message);
+  }
+}
+global.reloadUserData = () => {
+  userPreferences = loadUserData();
+  logger.info("[STOCK] User preferences reloaded from disk.");
+};
+
+/* ------------------------------------------------------------------ */
+/* Fetch stock data                                                   */
+/* ------------------------------------------------------------------ */
+// Baru: hanya ambil jika API memiliki data lebih baru
+async function fetchStockDataOnlyIfNew(lastKnown) {
+  try {
+    const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
+    const data = res.data;
+    if (data?.status === "success") {
+      const currentUpdatedAt = new Date(data.updated_at).getTime();
+      if (currentUpdatedAt > lastKnown) return data;
+    }
   } catch (e) {
     logger.error("[STOCK] Fetch error:", e.message);
   }
   return null;
 }
 
-/* ---------- Notification ---------- */
-async function notifyUsers(sock, payload) {
-  const stamp = new Date(payload.updated_at).toLocaleTimeString("id-ID", { hour12: false });
-  const lines = [];
+/* ------------------------------------------------------------------ */
+/* Notification constants                                             */
+/* ------------------------------------------------------------------ */
+const BLOCKQUOTE_ITEMS = [
+  'grandmaster sprinkler', 'levelup lollipop', 'master sprinkler', 'godly sprinkler',
+  'bug egg', 'paradise egg', 'romanesco', 'cacao', 'elder strawberry', 'giant pinecone',
+  'burning bud', 'sugar apple', 'ember lily', 'beanstalk', 'grape', 'mushroom', 'pepper'
+].map(item => item.toLowerCase());
 
-  for (const cat of CATEGORIES) {
-    const d = payload.data[cat];
-    if (!d?.items) continue;
-    if (cat === "travelingmerchant" && d.status === "leaved") continue;
+const DECORATION_EMOJIS = {
+  "beach crate": "🏖️","sign crate": "📋","red tractor": "🚜","green tractor": "🚜","compost bin": "♻️",
+  "torch": "🔥","light on ground": "💡","mini tv": "📺","small stone table": "🪨","medium stone table": "🪨",
+  "rock pile": "🪨","log bench": "🪑","medium wood flooring": "🧱","frog fountain": "⛲","wood pile": "🪵",
+  "night staff": "🌙","crate": "📦","sign": "📝","compost": "🗑️","light": "💡",
+  "tv": "📺","table": "🪑","stone": "🪨","bench": "🪑","flooring": "🧱",
+  "fountain": "⛲","summer fun crate": "🏝️","log": "🪵","brown bench": "🪑","rake": "🍂",
+  "bird bath": "🐦","large wood flooring": "🧱","stone lantern": "🏮","mutation spray wet": "💧","mutation spray windstruck": "🌪️",
+  "staff": "🌙"
+};
 
-    const items = d.items.map(i => ({ ...i, name: i.name.toLowerCase() }));
-    if (!items.length) continue;
-
-    const titleMap = {
-      seed: "🌱 Seeds",
-      gear: "⚙️ Gear",
-      egg: "🥚 Eggs",
-      cosmetics: "🎨 Cosmetics",
-      travelingmerchant: "🧳 Traveling Merchant",
-    };
-
-    const list = items
-      .map(it => `- ${it.emoji || "📦"} ${it.name.charAt(0).toUpperCase()}${it.name.slice(1)} x${it.quantity}`)
-      .join("\n");
-
-    lines.push(`*${titleMap[cat]}*\n${list}`);
-  }
-
-  if (!lines.length) return;
-
-  const msg = `🔔 *STOCK UPDATE*\n\n${lines.join("\n\n")}\n\n_Auto • ${stamp}_`;
+/* ------------------------------------------------------------------ */
+/* Notify users (tetap sama)                                          */
+/* ------------------------------------------------------------------ */
+async function notifyUsers(sazara, newData) {
+  const now = new Date();
+  const timestamp = now.toLocaleTimeString("id-ID", {
+    timeZone: "Asia/Jakarta",
+    hour12: false
+  });
 
   for (const [jid, prefs] of Object.entries(userPreferences)) {
     if (!prefs?.length) continue;
-    try {
-      if (jid.endsWith("@newsletter")) {
-        const plain = proto.Message.encode({ conversation: msg }).finish();
-        await sock.query({ tag: "message", attrs: { to: jid, type: "text" }, content: [{ tag: "plaintext", attrs: {}, content: plain }] });
-      } else {
-        await sock.sendMessage(jid, { text: msg });
+
+    const categoryMessages = {};
+    let totalItems = 0;
+
+    for (const category of CATEGORIES) {
+      const categoryData = newData.data[category];
+      if (!categoryData?.items) continue;
+      if (category === 'travelingmerchant' && categoryData.status === 'leaved') continue;
+
+      const items = categoryData.items.map(i => ({ ...i, name: i.name.toLowerCase() }));
+      const hasCategoryAll = prefs.includes(`${category}:all`);
+      const categoryItems = items.filter(item =>
+        hasCategoryAll || prefs.includes(item.name)
+      );
+
+      if (categoryItems.length === 0) continue;
+
+      totalItems += categoryItems.length;
+
+      const categoryNameMap = {
+        seed: '🌱 Seeds Stock',
+        gear: '⚙️ Gear Stock',
+        egg: '🥚 Egg Stock',
+        cosmetics: '🎨 Cosmetic Items',
+        travelingmerchant: '🧳 Traveling Merchant'
+      };
+
+      const itemsText = categoryItems.map(item => {
+        const itemName = item.name;
+        const displayName = itemName.charAt(0).toUpperCase() + itemName.slice(1);
+        const emoji = DECORATION_EMOJIS[itemName] || item.emoji || "📦";
+        return BLOCKQUOTE_ITEMS.includes(itemName)
+          ? `> ${emoji} \`\`\`*${displayName} x${item.quantity}*\`\`\``
+          : `- ${emoji} *${displayName} x${item.quantity}*`;
+      }).join("\n");
+
+      categoryMessages[category] = `*${categoryNameMap[category]}*\n${itemsText}`;
+    }
+
+    if (totalItems > 0) {
+      const message = `🔔 *STOCK UPDATE!*\n\n` +
+        Object.values(categoryMessages).join("\n\n") +
+        `\n\n_Pesan otomatis • ${timestamp}_`;
+
+      try {
+        if (jid.endsWith('@newsletter')) {
+          const msg = { conversation: message };
+          const plaintext = proto.Message.encode(msg).finish();
+          await sazara.query({
+            tag: 'message',
+            attrs: { to: jid, type: 'text' },
+            content: [{ tag: 'plaintext', attrs: {}, content: plaintext }]
+          });
+        } else {
+          await sazara.sendMessage(jid, { text: message });
+        }
+      } catch (error) {
+        logger.error(`[NOTIF ERROR] ${jid}:`, error.message);
       }
-    } catch (e) {
-      logger.error("[NOTIF]", jid, e.message);
     }
   }
 }
 
-/* ---------- Scheduler ---------- */
-async function startStockMonitor(sock) {
+/* ------------------------------------------------------------------ */
+/* Stock Monitor scheduler                                            */
+/* ------------------------------------------------------------------ */
+async function startStockMonitor(sazara) {
   userPreferences = loadUserData();
 
-  const tick = async () => {
+  const scheduleNextCheck = async () => {
     try {
-      logger.info("[STOCK] Checking API...");
-      const data = await fetchStockOnce();
-      if (!data) return;
+      const now = new Date();
+      const nextCheck = new Date(now);
+      nextCheck.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
+      nextCheck.setSeconds(12);
+      nextCheck.setMilliseconds(0);
 
-      const currentUpdatedAt = new Date(data.updated_at).getTime();
-      if (currentUpdatedAt > lastSentAt) {
-        await notifyUsers(sock, data);
-        lastSentAt = currentUpdatedAt;
-        logger.info("[STOCK] Broadcasted.");
-      } else {
-        logger.info("[STOCK] No new data, skip.");
+      if (nextCheck < now) {
+        nextCheck.setMinutes(nextCheck.getMinutes() + 5);
       }
+
+      const delayMs = nextCheck - now;
+      logger.info(`[STOCK] Next check at ${nextCheck.toLocaleTimeString("id-ID", { hour12: false })} (in ${Math.round(delayMs / 1000)}s)`);
+
+      setTimeout(async () => {
+        try {
+          logger.info("[STOCK] Checking stock update...");
+          const newData = await fetchStockDataOnlyIfNew(lastSentAt);
+
+          if (newData) {
+            logger.info("[STOCK] Sending stock notifications...");
+            await notifyUsers(sazara, newData);
+            lastSentAt = new Date(newData.updated_at).getTime();
+          } else {
+            logger.info("[STOCK] No new data, skip broadcast.");
+          }
+        } catch (e) {
+          logger.error("[STOCK] Check error:", e.message);
+        }
+        scheduleNextCheck();
+      }, delayMs);
     } catch (e) {
-      logger.error("[STOCK] Tick error:", e.message);
+      logger.error("[STOCK] Scheduler error:", e.message);
+      setTimeout(scheduleNextCheck, 5 * 60 * 1000);
     }
   };
 
-  // jalan sekali lalu setiap 5 menit
-  await tick();
-  setInterval(tick, 5 * 60 * 1000);
+  // Ambil & kirim data pertama kali
+  lastStockData = await fetchStockDataOnlyIfNew(lastSentAt);
+  if (lastStockData) {
+    lastSentAt = new Date(lastStockData.updated_at).getTime();
+    await notifyUsers(sazara, lastStockData);
+  }
+  scheduleNextCheck();
 }
 
-/* ---------- WhatsApp ---------- */
+/* ------------------------------------------------------------------ */
+/* WhatsApp connection                                                */
+/* ------------------------------------------------------------------ */
 async function connectToWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState("./sesi");
-  const { version } = await fetchLatestBaileysVersion();
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState("./sesi");
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    logger.info(`WA v${version.join(".")} | latest: ${isLatest}`);
 
-  const sock = makeWASocket({
-    logger: pino({ level: "silent" }),
-    auth: state,
-    browser: ["Ubuntu", "Chrome", "20.0.04"],
-    version,
-    syncFullHistory: false,
-  });
+    const sazara = makeWASocket({
+      logger: pino({ level: "silent" }),
+      auth: state,
+      browser: ["Ubuntu", "Chrome", "20.0.04"],
+      version,
+      syncFullHistory: false,
+    });
 
-  sock.ev.on("creds.update", saveCreds);
+    sazara.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
-    if (qr) require("qrcode-terminal").generate(qr, { small: true });
-    if (connection === "close") {
-      const reconnect = lastDisconnect?.error?.output?.statusCode !== 401;
-      if (reconnect) connectToWhatsApp();
-      else logger.error("Unauthorized, scan QR again.");
-    } else if (connection === "open") {
-      logger.info("✅ Bot ready");
-      startStockMonitor(sock);
-    }
-  });
+    sazara.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        logger.info("Scan QR:");
+        qrcode.generate(qr, { small: true });
+      }
 
-  // pesan handler (opsional)
-  const seen = new Set();
-  sock.ev.on("messages.upsert", async (m) => {
-    for (const msg of m.messages) {
-      if (!msg.message || msg.key.fromMe) continue;
-      if (seen.has(msg.key.id)) continue;
-      seen.add(msg.key.id);
-      const body = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-      if (body.includes("Copyright © growagarden.info")) continue;
-      /* require("./Sazara")(sock, { messages: [msg] }); */ // uncomment jika ada handler
-    }
-  });
+      if (connection === "close") {
+        const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== 401;
+        if (shouldReconnect) {
+          logger.warn("Reconnecting…");
+          await connectToWhatsApp();
+        } else {
+          logger.error("Unauthorized, please scan QR again.");
+        }
+      } else if (connection === "open") {
+        logger.info("✅ Bot ready");
+        startStockMonitor(sazara);
+      }
+    });
+
+    const seen = new Set();
+    sazara.ev.on("messages.upsert", async (m) => {
+      for (const msg of m.messages) {
+        if (!msg.message || msg.key.fromMe) continue;
+
+        const id = msg.key.id;
+        if (seen.has(id)) continue;
+        seen.add(id);
+
+        const sender = msg.key.remoteJid;
+        const isBroadcast = sender.endsWith("@broadcast");
+        const isStatus = sender === "status@broadcast";
+        const body = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+
+        if (body.includes("Copyright © growagarden.info")) continue;
+        if (isBroadcast || isStatus) continue;
+
+        const push = msg.pushName || "Unknown";
+        const who = msg.key.participant
+          ? `${push} (via group ${sender.split("@")[0]})`
+          : push;
+
+        logger.info(`Received message from ${sender} ${who}: ${body}`);
+        require("./Sazara")(sazara, { messages: [msg] });
+      }
+    });
+
+  } catch (error) {
+    logger.error("Error connecting to WhatsApp:", error);
+  }
 }
 
 connectToWhatsApp();
