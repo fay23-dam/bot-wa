@@ -1,8 +1,9 @@
+/*  index.js  */
 const {
   makeWASocket,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  proto
+  proto,
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const chalk = require("chalk");
@@ -14,6 +15,9 @@ const path = require("path");
 
 require("./settings");
 
+/* ----------------------------------------------------------
+   LOGGER
+---------------------------------------------------------- */
 const logger = pino({
   level: "info",
   transport: {
@@ -21,23 +25,31 @@ const logger = pino({
     options: {
       colorize: true,
       translateTime: "HH:MM:ss",
-      ignore: "pid,hostname"
-    }
-  }
+      ignore: "pid,hostname",
+    },
+  },
 });
 
-// --- Auto-ping server ---
+/* ----------------------------------------------------------
+   AUTO-PING SERVER (biar di-Railway/Replit tidak tidur)
+---------------------------------------------------------- */
 const app = express();
 app.get("/", (_, res) => res.send("Bot is alive!"));
 app.listen(3000, () => logger.info("[PING] Auto-ping server ready on port 3000"));
 
-// --- Stock Monitor System ---
+/* ----------------------------------------------------------
+   GLOBAL VARIABLES
+---------------------------------------------------------- */
 const CATEGORIES = ["seed", "gear", "egg", "cosmetics", "travelingmerchant"];
 const USER_DATA_PATH = path.join(__dirname, "userdata.json");
 
 let userPreferences = {};
 let lastStockData = null;
+let lastUpdatedAt = 0; // <--- tambahan: timestamp miliseconds terakhir yang sudah diproses
 
+/* ----------------------------------------------------------
+   LOAD / SAVE USERDATA
+---------------------------------------------------------- */
 function loadUserData() {
   try {
     if (fs.existsSync(USER_DATA_PATH)) {
@@ -48,7 +60,6 @@ function loadUserData() {
   }
   return {};
 }
-
 function saveUserData() {
   try {
     fs.writeFileSync(USER_DATA_PATH, JSON.stringify(userPreferences, null, 2));
@@ -56,14 +67,15 @@ function saveUserData() {
     logger.error("Error saving user data:", e.message);
   }
 }
-
 global.reloadUserData = () => {
   userPreferences = loadUserData();
   logger.info("[STOCK] User preferences reloaded from disk.");
 };
 
-// --- Retry Fetch ---
-async function fetchStockDataWithRetry(lastUpdatedAt = null) {
+/* ----------------------------------------------------------
+   FETCH STOCK DATA + RETRY LOGIC
+---------------------------------------------------------- */
+async function fetchStockDataWithRetry(lastKnown = null) {
   const maxRetries = 30;
   let attempt = 0;
 
@@ -75,48 +87,97 @@ async function fetchStockDataWithRetry(lastUpdatedAt = null) {
       if (data?.status === "success") {
         const newUpdatedAt = new Date(data.updated_at).getTime();
 
-        if (!lastUpdatedAt || newUpdatedAt > lastUpdatedAt) {
+        if (!lastKnown || newUpdatedAt > lastKnown) {
+          logger.info(`[STOCK] Data baru ditemukan (updated_at=${data.updated_at})`);
           return data;
         }
 
-        logger.info(`[STOCK] Data masih lama (${data.updated_at}), retrying... (${attempt + 1}/${maxRetries})`);
+        logger.info(
+          `[STOCK] Data masih lama (${data.updated_at}) - retry ${attempt + 1}/${maxRetries}`
+        );
       }
     } catch (e) {
       logger.error("[STOCK] Error fetching:", e.message);
     }
 
     attempt++;
-    await new Promise(res => setTimeout(res, 3000));
+    await new Promise((r) => setTimeout(r, 3000));
   }
 
-  logger.warn("[STOCK] Max retries reached, using latest data.");
+  logger.warn("[STOCK] Max retries reached, tidak ada data baru.");
   return null;
 }
 
-// --- Notification Logic ---
+/* ----------------------------------------------------------
+   NOTIFICATION ITEM DEFINITIONS
+---------------------------------------------------------- */
 const BLOCKQUOTE_ITEMS = [
-  'grandmaster sprinkler', 'levelup lollipop', 'master sprinkler', 'godly sprinkler',
-  'bug egg', 'paradise egg', 'romanesco', 'cacao', 'elder strawberry', 'giant pinecone',
-  'burning bud', 'sugar apple', 'ember lily', 'beanstalk', 'grape', 'mushroom', 'pepper'
-].map(item => item.toLowerCase());
+  "grandmaster sprinkler",
+  "levelup lollipop",
+  "master sprinkler",
+  "godly sprinkler",
+  "bug egg",
+  "paradise egg",
+  "romanesco",
+  "cacao",
+  "elder strawberry",
+  "giant pinecone",
+  "burning bud",
+  "sugar apple",
+  "ember lily",
+  "beanstalk",
+  "grape",
+  "mushroom",
+  "pepper",
+].map((i) => i.toLowerCase());
 
 const DECORATION_EMOJIS = {
-  "beach crate": "🏖️","sign crate": "📋","red tractor": "🚜","green tractor": "🚜","compost bin": "♻️",
-  "torch": "🔥","light on ground": "💡","mini tv": "📺","small stone table": "🪨","medium stone table": "🪨",
-  "rock pile": "🪨","log bench": "🪑","medium wood flooring": "🧱","frog fountain": "⛲","wood pile": "🪵",
-  "night staff": "🌙","crate": "📦","sign": "📝","compost": "🗑️","light": "💡",
-  "tv": "📺","table": "🪑","stone": "🪨","bench": "🪑","flooring": "🧱",
-  "fountain": "⛲","summer fun crate": "🏝️","log": "🪵","brown bench": "🪑","rake": "🍂",
-  "bird bath": "🐦","large wood flooring": "🧱","stone lantern": "🏮","mutation spray wet": "💧","mutation spray windstruck": "🌪️",
-  "staff": "🌙"
+  "beach crate": "🏖️",
+  "sign crate": "📋",
+  "red tractor": "🚜",
+  "green tractor": "🚜",
+  "compost bin": "♻️",
+  torch: "🔥",
+  "light on ground": "💡",
+  "mini tv": "📺",
+  "small stone table": "🪨",
+  "medium stone table": "🪨",
+  "rock pile": "🪨",
+  "log bench": "🪑",
+  "medium wood flooring": "🧱",
+  "frog fountain": "⛲",
+  "wood pile": "🪵",
+  "night staff": "🌙",
+  crate: "📦",
+  sign: "📝",
+  compost: "🗑️",
+  light: "💡",
+  tv: "📺",
+  table: "🪑",
+  stone: "🪨",
+  bench: "🪑",
+  flooring: "🧱",
+  fountain: "⛲",
+  "summer fun crate": "🏝️",
+  log: "🪵",
+  "brown bench": "🪑",
+  rake: "🍂",
+  "bird bath": "🐦",
+  "large wood flooring": "🧱",
+  "stone lantern": "🏮",
+  "mutation spray wet": "💧",
+  "mutation spray windstruck": "🌪️",
+  staff: "🌙",
 };
 
+/* ----------------------------------------------------------
+   NOTIFY USERS
+---------------------------------------------------------- */
 async function notifyUsers(sazara, newData) {
-  const now = new Date();
   const timestamp = new Date().toLocaleTimeString("id-ID", {
-  timeZone: "Asia/Jakarta",
-  hour12: false
-});
+    timeZone: "Asia/Jakarta",
+    hour12: false,
+  });
 
   for (const [jid, prefs] of Object.entries(userPreferences)) {
     if (!prefs?.length) continue;
@@ -127,51 +188,53 @@ async function notifyUsers(sazara, newData) {
     for (const category of CATEGORIES) {
       const categoryData = newData.data[category];
       if (!categoryData?.items) continue;
-      if (category === 'travelingmerchant' && categoryData.status === 'leaved') continue;
+      if (category === "travelingmerchant" && categoryData.status === "leaved") continue;
 
-      const items = categoryData.items.map(i => ({ ...i, name: i.name.toLowerCase() }));
+      const items = categoryData.items.map((i) => ({ ...i, name: i.name.toLowerCase() }));
       const hasCategoryAll = prefs.includes(`${category}:all`);
-      const categoryItems = items.filter(item =>
-        hasCategoryAll || prefs.includes(item.name)
+      const categoryItems = items.filter(
+        (item) => hasCategoryAll || prefs.includes(item.name)
       );
 
       if (categoryItems.length === 0) continue;
-
       totalItems += categoryItems.length;
 
       const categoryNameMap = {
-        seed: '🌱 Seeds Stock',
-        gear: '⚙️ Gear Stock',
-        egg: '🥚 Egg Stock',
-        cosmetics: '🎨 Cosmetic Items',
-        travelingmerchant: '🧳 Traveling Merchant'
+        seed: "🌱 Seeds Stock",
+        gear: "⚙️ Gear Stock",
+        egg: "🥚 Egg Stock",
+        cosmetics: "🎨 Cosmetic Items",
+        travelingmerchant: "🧳 Traveling Merchant",
       };
 
-      const itemsText = categoryItems.map(item => {
-        const itemName = item.name;
-        const displayName = itemName.charAt(0).toUpperCase() + itemName.slice(1);
-        const emoji = DECORATION_EMOJIS[itemName] || item.emoji || "📦";
-        return BLOCKQUOTE_ITEMS.includes(itemName)
-          ? `> ${emoji} \`\`\`*${displayName} x${item.quantity}*\`\`\``
-          : `- ${emoji} *${displayName} x${item.quantity}*`;
-      }).join("\n");
+      const itemsText = categoryItems
+        .map((item) => {
+          const itemName = item.name;
+          const displayName = itemName.charAt(0).toUpperCase() + itemName.slice(1);
+          const emoji = DECORATION_EMOJIS[itemName] || item.emoji || "📦";
+          return BLOCKQUOTE_ITEMS.includes(itemName)
+            ? `> ${emoji} \`\`\`*${displayName} x${item.quantity}*\`\`\``
+            : `- ${emoji} *${displayName} x${item.quantity}*`;
+        })
+        .join("\n");
 
       categoryMessages[category] = `*${categoryNameMap[category]}*\n${itemsText}`;
     }
 
     if (totalItems > 0) {
-      const message = `🔔 *STOCK UPDATE!*\n\n` +
+      const message =
+        `🔔 *STOCK UPDATE!*\n\n` +
         Object.values(categoryMessages).join("\n\n") +
         `\n\n_Pesan otomatis • ${timestamp}_`;
 
       try {
-        if (jid.endsWith('@newsletter')) {
+        if (jid.endsWith("@newsletter")) {
           const msg = { conversation: message };
           const plaintext = proto.Message.encode(msg).finish();
           await sazara.query({
-            tag: 'message',
-            attrs: { to: jid, type: 'text' },
-            content: [{ tag: 'plaintext', attrs: {}, content: plaintext }]
+            tag: "message",
+            attrs: { to: jid, type: "text" },
+            content: [{ tag: "plaintext", attrs: {}, content: plaintext }],
           });
         } else {
           await sazara.sendMessage(jid, { text: message });
@@ -183,9 +246,18 @@ async function notifyUsers(sazara, newData) {
   }
 }
 
-// --- Monitor Scheduler ---
+/* ----------------------------------------------------------
+   STOCK MONITOR SCHEDULER
+---------------------------------------------------------- */
 async function startStockMonitor(sazara) {
   userPreferences = loadUserData();
+
+  // Ambil data pertama kali
+  lastStockData = await fetchStockDataWithRetry(lastUpdatedAt);
+  if (lastStockData) {
+    lastUpdatedAt = new Date(lastStockData.updated_at).getTime();
+    await notifyUsers(sazara, lastStockData);
+  }
 
   const scheduleNextCheck = async () => {
     try {
@@ -195,23 +267,27 @@ async function startStockMonitor(sazara) {
       nextCheck.setSeconds(12);
       nextCheck.setMilliseconds(0);
 
-      if (nextCheck < now) {
-        nextCheck.setMinutes(nextCheck.getMinutes() + 5);
-      }
+      if (nextCheck < now) nextCheck.setMinutes(nextCheck.getMinutes() + 5);
 
       const delayMs = nextCheck - now;
-      logger.info(`[STOCK] Next check at ${nextCheck.toLocaleTimeString("id-ID", { hour12: false })} (in ${Math.round(delayMs / 1000)}s)`);
+      logger.info(
+        `[STOCK] Next check at ${nextCheck.toLocaleTimeString("id-ID", {
+          hour12: false,
+        })} (in ${Math.round(delayMs / 1000)}s)`
+      );
 
       setTimeout(async () => {
         try {
           logger.info("[STOCK] Checking stock update...");
-          const lastUpdated = lastStockData ? new Date(lastStockData.updated_at).getTime() : null;
-          const newData = await fetchStockDataWithRetry(lastUpdated);
+          const newData = await fetchStockDataWithRetry(lastUpdatedAt);
 
           if (newData) {
             logger.info("[STOCK] Sending stock notifications...");
-            await notifyUsers(sazara, newData);
+            lastUpdatedAt = new Date(newData.updated_at).getTime();
             lastStockData = newData;
+            await notifyUsers(sazara, newData);
+          } else {
+            logger.info("[STOCK] Tidak ada perubahan data, skip broadcast.");
           }
         } catch (e) {
           logger.error("[STOCK] Check error:", e.message);
@@ -224,11 +300,12 @@ async function startStockMonitor(sazara) {
     }
   };
 
-  lastStockData = await fetchStockDataWithRetry();
   scheduleNextCheck();
 }
 
-// --- WhatsApp Connection ---
+/* ----------------------------------------------------------
+   WHATSAPP CONNECTION
+---------------------------------------------------------- */
 async function connectToWhatsApp() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("./sesi");
@@ -265,6 +342,7 @@ async function connectToWhatsApp() {
       }
     });
 
+    // Handler pesan
     const seen = new Set();
     sazara.ev.on("messages.upsert", async (m) => {
       for (const msg of m.messages) {
@@ -291,10 +369,10 @@ async function connectToWhatsApp() {
         require("./Sazara")(sazara, { messages: [msg] });
       }
     });
-
   } catch (error) {
     logger.error("Error connecting to WhatsApp:", error);
   }
 }
 
+// Jalankan bot
 connectToWhatsApp();
