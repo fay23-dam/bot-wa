@@ -224,6 +224,7 @@ module.exports = async (sazara, m) => {
           "Kirim nama item yang ingin dipantau, pisahkan dengan koma:\n" +
           "Contoh: `blueberry, seed:all, advanced sprinkler, rareitems`\n\n" +
           "`rareitems` untuk menambahkan semua item langka" +
+          "`elder strawberry` untuk item seperti ini tidak perlu lagi menuliskan `seed` di akhir cukup sampai namanya saja" +
           categoriesInfo + "\n\n" +
           `Ketik *${global.prefix}cancel* untuk membatalkan setup`
         );
