@@ -15,9 +15,9 @@ const path = require("path");
 
 require("./settings");
 
-/* ------------------------------------------------------------------ */
-/* Logger                                                             */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------ */
+/* Logger                                                       */
+/* ------------------------------------------------------------ */
 const logger = pino({
   level: "info",
   transport: {
@@ -30,16 +30,16 @@ const logger = pino({
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* Auto-ping server                                                     */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------ */
+/* Auto-ping server                                             */
+/* ------------------------------------------------------------ */
 const app = express();
 app.get("/", (_, res) => res.send("Bot is alive!"));
 app.listen(3000, () => logger.info("[PING] Auto-ping server ready on port 3000"));
 
-/* ------------------------------------------------------------------ */
-/* Global variables                                                     */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------ */
+/* Global variables                                             */
+/* ------------------------------------------------------------ */
 const CATEGORIES = ["seed", "gear", "egg", "cosmetics", "travelingmerchant"];
 const USER_DATA_PATH = path.join(__dirname, "userdata.json");
 
@@ -47,9 +47,9 @@ let userPreferences = {};
 let lastStockData = null;
 let lastSentAt = 0;   // timestamp terakhir yang sudah dikirim
 
-/* ------------------------------------------------------------------ */
-/* User data helper                                                   */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------ */
+/* User data helper                                             */
+/* ------------------------------------------------------------ */
 function loadUserData() {
   try {
     if (fs.existsSync(USER_DATA_PATH)) {
@@ -60,6 +60,7 @@ function loadUserData() {
   }
   return {};
 }
+
 function saveUserData() {
   try {
     fs.writeFileSync(USER_DATA_PATH, JSON.stringify(userPreferences, null, 2));
@@ -67,32 +68,47 @@ function saveUserData() {
     logger.error("Error saving user data:", e.message);
   }
 }
+
 global.reloadUserData = () => {
   userPreferences = loadUserData();
   logger.info("[STOCK] User preferences reloaded from disk.");
 };
 
-/* ------------------------------------------------------------------ */
-/* Fetch stock data                                                   */
-/* ------------------------------------------------------------------ */
-// Baru: hanya ambil jika API memiliki data lebih baru
-async function fetchStockDataOnlyIfNew(lastKnown) {
-  try {
-    const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
-    const data = res.data;
-    if (data?.status === "success") {
-      const currentUpdatedAt = new Date(data.updated_at).getTime();
-      if (currentUpdatedAt > lastKnown) return data;
+/* ------------------------------------------------------------ */
+/* Fetch stock data – retry tiap 3 detik sampai data baru       */
+/* ------------------------------------------------------------ */
+async function fetchStockUntilNew(lastKnown) {
+  const maxRetries = 200; // ±10 menit
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
+    try {
+      const res = await axios.get("https://gagstock.gleeze.com/grow-a-garden");
+      const data = res.data;
+
+      if (data?.status === "success") {
+        const current = new Date(data.updated_at).getTime();
+        if (current > lastKnown) {
+          logger.info(`[STOCK] Data baru ditemukan (updated_at=${data.updated_at})`);
+          return data;
+        }
+        logger.info(`[STOCK] Data lama (${data.updated_at}), retry #${attempt + 1}`);
+      }
+    } catch (e) {
+      logger.error("[STOCK] Fetch error:", e.message);
     }
-  } catch (e) {
-    logger.error("[STOCK] Fetch error:", e.message);
+
+    attempt++;
+    await new Promise(r => setTimeout(r, 3000));
   }
+
+  logger.warn("[STOCK] Max retries reached, gunakan data terakhir.");
   return null;
 }
 
-/* ------------------------------------------------------------------ */
-/* Notification constants                                             */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------ */
+/* Notification constants (emoji, blockquote, dll) – tetap sama */
+/* ------------------------------------------------------------ */
 const BLOCKQUOTE_ITEMS = [
   'grandmaster sprinkler', 'levelup lollipop', 'master sprinkler', 'godly sprinkler',
   'bug egg', 'paradise egg', 'romanesco', 'cacao', 'elder strawberry', 'giant pinecone',
@@ -110,9 +126,9 @@ const DECORATION_EMOJIS = {
   "staff": "🌙"
 };
 
-/* ------------------------------------------------------------------ */
-/* Notify users (tetap sama)                                          */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------ */
+/* Notify users – tetap sama                                      */
+/* ------------------------------------------------------------ */
 async function notifyUsers(sazara, newData) {
   const now = new Date();
   const timestamp = now.toLocaleTimeString("id-ID", {
@@ -138,7 +154,6 @@ async function notifyUsers(sazara, newData) {
       );
 
       if (categoryItems.length === 0) continue;
-
       totalItems += categoryItems.length;
 
       const categoryNameMap = {
@@ -185,9 +200,9 @@ async function notifyUsers(sazara, newData) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Stock Monitor scheduler                                            */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------ */
+/* Stock Monitor scheduler                                        */
+/* ------------------------------------------------------------ */
 async function startStockMonitor(sazara) {
   userPreferences = loadUserData();
 
@@ -209,14 +224,14 @@ async function startStockMonitor(sazara) {
       setTimeout(async () => {
         try {
           logger.info("[STOCK] Checking stock update...");
-          const newData = await fetchStockDataOnlyIfNew(lastSentAt);
+          const newData = await fetchStockUntilNew(lastSentAt);
 
           if (newData) {
             logger.info("[STOCK] Sending stock notifications...");
             await notifyUsers(sazara, newData);
             lastSentAt = new Date(newData.updated_at).getTime();
           } else {
-            logger.info("[STOCK] No new data, skip broadcast.");
+            logger.info("[STOCK] No new data after max retries, skip.");
           }
         } catch (e) {
           logger.error("[STOCK] Check error:", e.message);
@@ -229,8 +244,8 @@ async function startStockMonitor(sazara) {
     }
   };
 
-  // Ambil & kirim data pertama kali
-  lastStockData = await fetchStockDataOnlyIfNew(lastSentAt);
+  // Ambil & broadcast data pertama kali (jika ada)
+  lastStockData = await fetchStockUntilNew(lastSentAt);
   if (lastStockData) {
     lastSentAt = new Date(lastStockData.updated_at).getTime();
     await notifyUsers(sazara, lastStockData);
@@ -238,9 +253,9 @@ async function startStockMonitor(sazara) {
   scheduleNextCheck();
 }
 
-/* ------------------------------------------------------------------ */
-/* WhatsApp connection                                                */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------ */
+/* WhatsApp connection                                            */
+/* ------------------------------------------------------------ */
 async function connectToWhatsApp() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("./sesi");
